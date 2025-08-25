@@ -1,0 +1,180 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>电脑 ↔ 手机 文件互传</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    .row { margin: 8px 0; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    #log { height: 200px; overflow: auto; background: #f7f7f7; padding: 8px; border: 1px solid #ddd; }
+    button { padding: 6px 12px; }
+    input[type=number] { width: 100px; }
+    #dropZone { border: 2px dashed #999; padding: 20px; text-align: center; color: #666; }
+    #dropZone.highlight { border-color: #2b90ff; color: #2b90ff; background: #f0f7ff; }
+  </style>
+</head>
+<body>
+  <h2>电脑 ↔ 手机 文件互传</h2>
+
+  <div class="row">
+    <label>接收服务端口: <input id="port" type="number" value="8090" /></label>
+    <button id="start">启动接收服务</button>
+    <button id="stop">停止接收服务</button>
+  </div>
+
+  <div class="row">
+    <div>上传 URL: <span id="url" class="mono">(未启动)</span></div>
+  </div>
+  <div class="row">
+    <button id="discover">自动发现电脑</button>
+    <span id="discoverResult" class="mono"></span>
+  </div>
+
+
+  <div class="row">
+    <button id="discoverAndroid">发现手机</button>
+    <span id="androidResult" class="mono"></span>
+  </div>
+
+  <div class="row">
+    <h3>电脑发送文件（到对端 /upload）</h3>
+    <input id="targetUrl" type="text" placeholder="http://<对端IP>:<端口>/upload" style="width: 400px;" />
+    <input id="file" type="file" />
+    <button id="send">发送</button>
+  </div>
+  <div class="row">
+    <h3>拖拽发送（到目标 /upload）</h3>
+    <div id="dropZone">将文件拖到此处发送</div>
+  </div>
+
+
+  <div class="row">
+    <h3>日志</h3>
+    <div id="log"></div>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (msg) => { const d = document.createElement('div'); d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`; $('log').prepend(d); };
+
+    // 初始化：载入上次目标地址
+    try {
+      const lastTarget = localStorage.getItem('lastTargetUrl');
+      if (lastTarget) $('targetUrl').value = lastTarget;
+    } catch {}
+
+    async function refreshInfo() {
+      const info = await window.api.info();
+      $('url').textContent = info.url;
+    }
+
+    // 启动/停止接收服务
+    $('start').onclick = async () => {
+      const port = parseInt($('port').value, 10) || 8090;
+      await window.api.startServer(port);
+      log('接收服务已启动');
+      refreshInfo();
+    };
+    $('stop').onclick = async () => {
+      await window.api.stopServer();
+      log('接收服务已停止');
+      $('url').textContent = '(未启动)';
+    };
+
+    // 发送（选择文件）
+    $('send').onclick = async () => {
+      const url = $('targetUrl').value.trim();
+      const fileInput = $('file');
+      if (!url) return alert('请输入目标 /upload 地址');
+      if (!fileInput.files || !fileInput.files[0]) return alert('请选择文件');
+      await sendFiles(url, [fileInput.files[0]]);
+    };
+
+    // 自动发现电脑
+    $('discover').onclick = async () => {
+      try {
+        const info = await window.api.discover();
+        if (info && info.started) {
+          $('url').textContent = info.url;
+          $('discoverResult').textContent = `发现电脑：${info.url}`;
+          log(`自动配对成功：${info.url}`);
+        } else if (info) {
+          $('discoverResult').textContent = `发现电脑：${info.ip}:${info.port}（接收未启动）`;
+          log('已发现电脑，但接收服务未启动');
+        } else {
+          $('discoverResult').textContent = '未发现电脑';
+          log('未发现电脑');
+        }
+      } catch (e) {
+        log('发现失败：' + e.message);
+      }
+    };
+
+    // 发现手机（Android）
+    $('discoverAndroid').onclick = async () => {
+      try {
+        const info = await window.api.discoverAndroid();
+        if (info && info.url) {
+          $('targetUrl').value = info.url;
+          try { localStorage.setItem('lastTargetUrl', info.url); } catch {}
+          $('androidResult').textContent = `发现手机：${info.url}`;
+          log(`发现手机成功：${info.url}`);
+        } else {
+          $('androidResult').textContent = '未发现手机';
+          log('未发现手机');
+        }
+      } catch (e) {
+        log('发现手机失败：' + e.message);
+      }
+    };
+
+    // 拖拽发送
+    const dropZone = $('dropZone');
+    function preventDefaults(e) { e.preventDefault(); e.stopPropagation(); }
+    ['dragenter','dragover','dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, preventDefaults, false));
+    ['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.add('highlight'), false));
+    ['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, () => dropZone.classList.remove('highlight'), false));
+    dropZone.addEventListener('drop', async (e) => {
+      const url = $('targetUrl').value.trim();
+      if (!url) return alert('请先填写目标 /upload 地址');
+      const files = e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+      await sendFiles(url, Array.from(files));
+    });
+
+    // 统一发送实现（带一次重试）
+    async function sendFiles(url, files) {
+      for (const file of files) {
+        let attempts = 0, ok = false; const max = 2;
+        while (attempts < max && !ok) {
+          try {
+            const res = await fetch(url, { method: 'POST', headers: { 'X-Filename': encodeURIComponent(file.name) }, body: file });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            log(`已发送：${file.name}`);
+            ok = true;
+          } catch (err) {
+            attempts++;
+            if (attempts >= max) {
+              log(`发送失败：${err.message}`);
+            } else {
+              await new Promise(r => setTimeout(r, 500));
+              log(`重试发送：${file.name}`);
+            }
+          }
+        }
+      }
+    }
+
+    // 事件订阅
+    window.api.onServerStarted((info) => { $('url').textContent = info.url; log(`接收服务启动于 ${info.url}`); });
+    window.api.onServerStopped(() => log('接收服务停止'));
+    window.api.onServerReceived(({ filename, savePath }) => log(`接收完成：${decodeURIComponent(filename)} → ${savePath}`));
+    window.api.onServerError((msg) => log(`服务错误：${msg}`));
+
+    refreshInfo();
+  </script>
+</body>
+</html>
+

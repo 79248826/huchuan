@@ -1,0 +1,18 @@
+# Node/Electron
+pc-app/node_modules/
+pc-app/.npm/
+pc-app/.cache/
+pc-app/out/
+pc-app/dist/
+
+# Android Gradle
+android-app/.gradle/
+android-app/.idea/
+android-app/build/
+android-app/app/build/
+*.iml
+
+# OS/editor
+.DS_Store
+Thumbs.db
+
